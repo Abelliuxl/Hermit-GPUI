@@ -1,0 +1,64 @@
+[package]
+name = "hermit-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "Hermit — a native macOS client for local and remote coding agents, rebuilt on GPUI"
+license = "MIT"
+repository = "https://github.com/Abelliuxl/Hermit-GPUI"
+readme = "README.md"
+
+[[bin]]
+name = "HermitGPUI"
+path = "src/main.rs"
+
+[dependencies]
+# `runtime_shaders` compiles Metal shaders on first launch instead of at build
+# time, so machines without the standalone Metal Toolchain (Xcode 26+) can
+# build the app. Remove this feature on CI/release builds if preferred.
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+
+# Async runtime for backend transports (HTTP, WebSocket, SSE, subprocesses).
+tokio = { version = "1.47", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "process",
+    "io-util",
+    "net",
+    "time",
+] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "stream",
+] }
+futures = "0.3"
+async-trait = "0.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+anyhow = "1"
+thiserror = "2"
+
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+unicode-segmentation = "1"
+base64 = "0.22"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+
+# macOS Keychain
+security-framework = "3"
+
+# Native open panel for composer attachments
+rfd = "0.15"
+
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+[profile.release]
+opt-level = 2
+strip = true
+lto = "thin"

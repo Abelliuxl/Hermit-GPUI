@@ -1,0 +1,174 @@
+use crate::state::AppState;
+use crate::ui::chat::ChatView;
+use crate::ui::sidebar::SidebarView;
+use crate::ui::theme::Theme;
+use gpui::{
+    div, prelude::*, px, Context, Entity, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+};
+
+/// Root shell: toolbar + sidebar + chat split.
+pub struct RootView {
+    state: Entity<AppState>,
+    sidebar: Entity<SidebarView>,
+    chat: Entity<ChatView>,
+}
+
+impl RootView {
+    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let sidebar = cx.new(|cx| SidebarView::new(state.clone(), cx));
+        let chat = cx.new(|cx| ChatView::new(state.clone(), cx));
+        cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        Self {
+            state,
+            sidebar,
+            chat,
+        }
+    }
+}
+
+impl Render for RootView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.clone();
+        let state_new = self.state.clone();
+        let state_settings = self.state.clone();
+        let (connection_label, pill_color, last_error) = {
+            let state = state.read(cx);
+            (
+                state.connection_state.label(),
+                pill_color(&state.connection_state),
+                state.last_error.clone(),
+            )
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(Theme::window_bg())
+            .text_color(Theme::text())
+            // Toolbar
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(Theme::border())
+                    .bg(Theme::sidebar_bg())
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(Theme::accent())
+                            .child("Hermit"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::text_tertiary())
+                            .child("GPUI"),
+                    )
+                    .child(div().flex_1())
+                    .child(toolbar_button("refresh", "⟳ Refresh", {
+                        let state = state_settings;
+                        move |_event, _window, cx| {
+                            state.update(cx, |state, cx| state.refresh_sessions(true, cx));
+                        }
+                    }))
+                    .child(toolbar_button("new-session", "＋ New Session", {
+                        let state = state_new;
+                        move |_event, _window, cx| {
+                            state.update(cx, |state, cx| state.start_fresh_chat(cx));
+                        }
+                    }))
+                    .child(toolbar_button("settings", "Settings", {
+                        move |_event, window, cx| {
+                            window.dispatch_action(
+                                Box::new(crate::ui::settings_window::OpenSettings),
+                                cx,
+                            );
+                        }
+                    })),
+            )
+            // Body
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    .child(self.sidebar.clone())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .child(self.chat.clone()),
+                    ),
+            )
+            // Status bar
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_4()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(Theme::border())
+                    .bg(Theme::sidebar_bg())
+                    .child(div().size(px(7.0)).rounded_full().bg(pill_color))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::text_secondary())
+                            .child(connection_label),
+                    )
+                    .child(div().flex_1())
+                    .children(last_error.map(|error| {
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::warn())
+                            .max_w(px(720.0))
+                            .text_ellipsis()
+                            .child(error)
+                    })),
+            )
+    }
+}
+
+fn toolbar_button(
+    id: &'static str,
+    label: &'static str,
+    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .text_size(px(11.0))
+        .text_color(Theme::text_secondary())
+        .cursor_pointer()
+        .hover(|style| style.bg(Theme::surface_hover()).text_color(Theme::text()))
+        .on_click(on_click)
+        .child(label)
+}
+
+fn pill_color(state: &crate::models::ConnectionState) -> gpui::Hsla {
+    match state {
+        crate::models::ConnectionState::Connected => Theme::ok(),
+        crate::models::ConnectionState::Connecting => Theme::warn(),
+        crate::models::ConnectionState::Disconnected => Theme::text_tertiary(),
+        crate::models::ConnectionState::Degraded(_) => Theme::warn(),
+        crate::models::ConnectionState::Failed(_) => Theme::danger(),
+    }
+}
