@@ -177,15 +177,17 @@ fn normalize(content: &str) -> String {
     }
 
     if !text.contains('\n') {
-        if let Ok(re) =
-            regex::Regex::new(r"(?<![A-Za-z0-9.])([1-9][0-9]?)([A-Za-z_][A-Za-z0-9_.\-]+)")
-        {
+        // Split "3Step" into "3. Step" for single-line agent output. The
+        // look-around the Swift version used is unsupported by the regex
+        // crate, so the boundary character is captured and re-emitted.
+        let re = regex::Regex::new(r"(^|[^A-Za-z0-9.])([1-9][0-9]?)([A-Za-z_][A-Za-z0-9_.\-]+)");
+        if let Ok(re) = re {
             text = re
-                .replace_all(&text, "\n$1. $2")
+                .replace_all(&text, "${1}\n$2. $3")
                 .trim_matches(|c: char| c.is_whitespace())
                 .to_string();
-            return text;
         }
+        return text;
     }
 
     text.trim().to_string()
@@ -280,6 +282,18 @@ mod tests {
                 MarkdownBlock::Numbered(1, "first".into()),
                 MarkdownBlock::Numbered(2, "second".into()),
                 MarkdownBlock::Quote("quoted".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_numbered_mid_sentence() {
+        let blocks = parse("do 3Step one now");
+        assert_eq!(
+            blocks,
+            vec![
+                MarkdownBlock::Paragraph("do".into()),
+                MarkdownBlock::Numbered(3, "Step one now".into()),
             ]
         );
     }
