@@ -25,8 +25,31 @@ actions!(hermit, [NewSession, RefreshSessions, Quit]);
 struct StateGlobal(gpui::Entity<AppState>);
 impl gpui::Global for StateGlobal {}
 
+struct MainWindowGlobal(Option<gpui::WindowHandle<RootView>>);
+impl gpui::Global for MainWindowGlobal {}
+
 struct SettingsWindowGlobal(Option<gpui::WindowHandle<ui::settings_window::SettingsView>>);
 impl gpui::Global for SettingsWindowGlobal {}
+
+fn open_main_window(
+    state: gpui::Entity<AppState>,
+    cx: &mut App,
+) -> gpui::Result<gpui::WindowHandle<RootView>> {
+    let bounds = Bounds::centered(None, size(px(1180.0), px(760.0)), cx);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some("Hermit".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(12.0), px(12.0))),
+            }),
+            window_min_size: Some(size(px(560.0), px(480.0))),
+            ..Default::default()
+        },
+        |_window, cx| cx.new(|cx| RootView::new(state, cx)),
+    )
+}
 
 fn main() {
     // Dedicated async runtime for backend transports (HTTP, WS, SSE, CLIs).
@@ -35,42 +58,52 @@ fn main() {
         .build()
         .expect("failed to build tokio runtime");
 
-    Application::new().run(move |cx: &mut App| {
+    // Clicking the Dock icon brings the main window back after the user
+    // closed it with the red traffic light.
+    let app = Application::new();
+    app.on_reopen(|cx| {
+        cx.activate(true);
+        let Some(state) = cx.try_global::<StateGlobal>().map(|g| g.0.clone()) else {
+            return;
+        };
+        let existing = cx
+            .try_global::<MainWindowGlobal>()
+            .and_then(|global| global.0.clone());
+        let activated = existing
+            .map(|handle| {
+                handle
+                    .update(cx, |_root, window, _cx| window.activate_window())
+                    .is_ok()
+            })
+            .unwrap_or(false);
+        if !activated {
+            match open_main_window(state, cx) {
+                Ok(handle) => {
+                    let _ = handle.update(cx, |_root, window, _cx| window.activate_window());
+                    cx.set_global(MainWindowGlobal(Some(handle)));
+                }
+                Err(error) => {
+                    log_debug!("app", "failed to reopen main window: {error}");
+                }
+            }
+        }
+    });
+    app.run(move |cx: &mut App| {
         cx.set_global(state::TokioGlobal(runtime));
         ui::editor::bind_editor_keys(cx);
 
-        let bounds = Bounds::centered(None, size(px(1180.0), px(760.0)), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Hermit".into()),
-                        appears_transparent: true,
-                        traffic_light_position: Some(point(px(12.0), px(12.0))),
-                    }),
-                    window_min_size: Some(size(px(560.0), px(480.0))),
-                    ..Default::default()
-                },
-                |_window, cx| {
-                    let state = cx.new(|cx| AppState::new(cx));
-                    cx.set_global(StateGlobal(state.clone()));
-                    cx.new(|cx| RootView::new(state, cx))
-                },
-            )
-            .expect("failed to open main window");
+        let state = cx.new(|cx| AppState::new(cx));
+        cx.set_global(StateGlobal(state.clone()));
 
-        window
-            .update(cx, |_root, window, cx| {
-                window.activate_window();
-                // Minimize instead of closing so state survives the red button,
-                // mirroring the SwiftUI app's close-to-hide behavior.
-                window.on_window_should_close(cx, |window, _cx| {
-                    window.minimize_window();
-                    false
-                });
-            })
-            .ok();
+        match open_main_window(state, cx) {
+            Ok(window) => {
+                cx.set_global(MainWindowGlobal(Some(window)));
+                let _ = window.update(cx, |_root, window, _cx| window.activate_window());
+            }
+            Err(error) => {
+                log_debug!("app", "failed to open main window: {error}");
+            }
+        }
 
         // App-level actions.
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -86,21 +119,20 @@ fn main() {
             let existing = cx
                 .try_global::<SettingsWindowGlobal>()
                 .and_then(|global| global.0.clone());
-            if let Some(handle) = existing {
-                let _ = handle.update(cx, |_view, window, _cx| window.activate_window());
-            } else {
+            let activated = existing
+                .map(|handle| {
+                    handle
+                        .update(cx, |_view, window, _cx| window.activate_window())
+                        .is_ok()
+                })
+                .unwrap_or(false);
+            if !activated {
                 let state = cx.global::<StateGlobal>().0.clone();
                 match ui::settings_window::SettingsView::open(state, cx) {
                     Ok(handle) => {
-                        handle
-                            .update(cx, |_view, window, cx| {
-                                window.activate_window();
-                                window.on_window_should_close(cx, |window, _cx| {
-                                    window.minimize_window();
-                                    false
-                                });
-                            })
-                            .ok();
+                        let _ = handle.update(cx, |_view, window, _cx| {
+                            window.activate_window();
+                        });
                         cx.set_global(SettingsWindowGlobal(Some(handle)));
                     }
                     Err(error) => {

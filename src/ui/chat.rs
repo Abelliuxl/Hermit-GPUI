@@ -7,17 +7,19 @@ use crate::ui::editor::{Editor, EditorEvent};
 use crate::ui::markdown_view::render_blocks;
 use crate::ui::theme::Theme;
 use gpui::{
-    div, prelude::*, px, uniform_list, AnyElement, Context, Entity, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollStrategy, StatefulInteractiveElement, Styled,
-    UniformListScrollHandle, Window,
+    div, list, prelude::*, px, AnyElement, Context, Entity, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, Styled,
+    Window,
 };
 use std::time::Duration;
 
 pub struct ChatView {
     state: Entity<AppState>,
     editor: Entity<Editor>,
-    scroll_handle: UniformListScrollHandle,
+    list_state: ListState,
+    last_list_count: usize,
     last_scroll_signature: u64,
+    needs_initial_focus: bool,
     expanded_messages: std::collections::HashSet<String>,
     model_menu_open: bool,
     permission_menu_open: bool,
@@ -54,8 +56,10 @@ impl ChatView {
         Self {
             state,
             editor,
-            scroll_handle: UniformListScrollHandle::new(),
+            list_state: ListState::new(0, ListAlignment::Top, px(500.0)),
+            last_list_count: 0,
             last_scroll_signature: 0,
+            needs_initial_focus: true,
             expanded_messages: std::collections::HashSet::new(),
             model_menu_open: false,
             permission_menu_open: false,
@@ -80,9 +84,16 @@ impl ChatView {
 }
 
 impl Render for ChatView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Focus the composer once on first paint so typing works immediately.
+        if self.needs_initial_focus {
+            self.needs_initial_focus = false;
+            let handle = self.editor.focus_handle(cx);
+            window.on_next_frame(move |window, _cx| window.focus(&handle));
+        }
+
         let signature = self.scroll_signature(cx);
-        let (message_count, is_streaming, has_clarify) = {
+        let (message_count, is_streaming) = {
             let state = self.state.read(cx);
             (
                 state.messages.len(),
@@ -91,19 +102,23 @@ impl Render for ChatView {
                     .last()
                     .map(|m| m.is_streaming)
                     .unwrap_or(false),
-                state.pending_clarify.is_some(),
             )
         };
 
-        if signature != self.last_scroll_signature && (is_streaming || has_clarify) {
-            self.last_scroll_signature = signature;
-            if message_count > 0 {
-                self.scroll_handle
-                    .scroll_to_item(message_count.saturating_sub(1), ScrollStrategy::Bottom);
+        // Keep the variable-height list measurements in sync with the message
+        // vec, and follow the streaming bubble while a turn is running.
+        if message_count != self.last_list_count {
+            let old_count = self.last_list_count;
+            self.last_list_count = message_count;
+            self.list_state.splice(0..old_count, message_count);
+            if message_count > old_count && message_count > 0 {
+                self.list_state.scroll_to_reveal_item(message_count - 1);
             }
-        } else {
-            self.last_scroll_signature = signature;
+        } else if signature != self.last_scroll_signature && is_streaming && message_count > 0 {
+            self.list_state.splice(message_count - 1..message_count, 1);
+            self.list_state.scroll_to_reveal_item(message_count - 1);
         }
+        self.last_scroll_signature = signature;
 
         div()
             .flex_1()
@@ -120,10 +135,7 @@ impl Render for ChatView {
 
 impl ChatView {
     fn render_message_list(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (count, is_empty, chat_entity) = {
-            let state = self.state.read(cx);
-            (state.messages.len(), state.messages.is_empty(), cx.entity())
-        };
+        let is_empty = self.state.read(cx).messages.is_empty();
 
         if is_empty {
             return div()
@@ -158,27 +170,20 @@ impl ChatView {
                 .into_any();
         }
 
-        uniform_list(
-            "messages",
-            count,
-            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                let chat = chat_entity.clone();
-                let state = this.state.read(cx);
-                let messages = state.messages.clone();
-                drop(state);
-                range
-                    .filter(|index| *index < messages.len())
-                    .filter_map(|index| messages.get(index).map(|message| (index, message)))
-                    .map(|(_index, message)| {
-                        let expanded = this.expanded_messages.contains(&message.id);
-                        render_message_bubble(message, expanded, chat.clone(), this.state.clone())
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        )
+        let list_state = self.list_state.clone();
+        let chat = cx.entity();
+        let state_entity = self.state.clone();
+        let messages = state_entity.read(cx).messages.clone();
+
+        list(list_state, move |index, _window, cx| {
+            let Some(message) = messages.get(index) else {
+                return div().into_any();
+            };
+            let expanded = chat.read(cx).expanded_messages.contains(&message.id);
+            render_message_bubble(message, expanded, chat.clone(), state_entity.clone())
+        })
         .flex_1()
         .min_h_0()
-        .track_scroll(self.scroll_handle.clone())
         .into_any()
     }
 
@@ -899,23 +904,27 @@ fn render_message_bubble(
             if !message.is_streaming && !message.content.trim().is_empty() {
                 let content = message.content.clone();
                 bubble = bubble.child(
-                    div()
-                        .id(gpui::ElementId::NamedInteger(
-                            "copy-message".into(),
-                            id_hash,
-                        ))
-                        .px_2()
-                        .py(px(2.0))
-                        .rounded_full()
-                        .bg(Theme::tool_bg())
-                        .text_size(px(10.0))
-                        .text_color(Theme::text_tertiary())
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(Theme::text()))
-                        .on_click(move |_event, _window, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.clone()));
-                        })
-                        .child("Copy"),
+                    div().flex().flex_row().child(
+                        div()
+                            .id(gpui::ElementId::NamedInteger(
+                                "copy-message".into(),
+                                id_hash,
+                            ))
+                            .px_2()
+                            .py(px(2.0))
+                            .rounded_full()
+                            .bg(Theme::tool_bg())
+                            .text_size(px(10.0))
+                            .text_color(Theme::text_tertiary())
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(Theme::text()))
+                            .on_click(move |_event, _window, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                    content.clone(),
+                                ));
+                            })
+                            .child("Copy"),
+                    ),
                 );
             }
 

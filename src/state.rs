@@ -544,6 +544,8 @@ impl AppState {
                         // session existed.
                         if let Some((text, attachments)) = state.pending_after_start.take() {
                             if let Some(session_id) = state.live_gateway_session_id.clone() {
+                                state.composer_text = String::new();
+                                state.composer_attachments = Vec::new();
                                 state.perform_send(text, attachments, session_id, cx);
                             }
                         }
@@ -552,6 +554,12 @@ impl AppState {
                         state.connection_state = ConnectionState::Failed(error.to_string());
                         state.last_error = Some(error.to_string());
                         state.transport_ready = false;
+                        // Give the held-back prompt back to the composer so
+                        // nothing the user typed is lost.
+                        if let Some((text, attachments)) = state.pending_after_start.take() {
+                            state.composer_text = text;
+                            state.composer_attachments = attachments;
+                        }
                         log_debug!("app", "session.create failed: {error}");
                     }
                 }
@@ -583,9 +591,9 @@ impl AppState {
 
         if !self.transport_ready || self.live_gateway_session_id.is_none() {
             // No live session yet: create one first, then submit automatically.
-            self.composer_text = String::new();
-            self.composer_attachments = Vec::new();
-            self.pending_after_start = Some((text, attachments));
+            // Keep the composer content visible until the prompt actually
+            // submits, so a failed session setup never eats the user's text.
+            self.pending_after_start = Some((text.clone(), attachments.clone()));
             log_debug!("app", "no live session on send; creating fresh chat first");
             self.start_fresh_chat(cx);
             return;
