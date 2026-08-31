@@ -29,6 +29,9 @@ rustup default stable
 # If the C toolchain cannot find macOS SDK headers (ring's build):
 export SDKROOT="$(xcrun --show-sdk-path)"
 
+# Xcode 26+ ships the Metal shader compiler as a separate component:
+xcodebuild -downloadComponent MetalToolchain
+
 cargo build --release
 ```
 

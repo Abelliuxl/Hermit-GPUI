@@ -12,10 +12,7 @@ name = "HermitGPUI"
 path = "src/main.rs"
 
 [dependencies]
-# `runtime_shaders` compiles Metal shaders on first launch instead of at build
-# time, so machines without the standalone Metal Toolchain (Xcode 26+) can
-# build the app. Remove this feature on CI/release builds if preferred.
-gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+gpui = "0.2.2"
 
 # Async runtime for backend transports (HTTP, WebSocket, SSE, subprocesses).
 tokio = { version = "1.47", features = [
